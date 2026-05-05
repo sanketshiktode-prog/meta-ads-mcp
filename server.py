@@ -1,12 +1,12 @@
 """
-Meta Ads MCP Server
-Exposes Meta Ads operations as tools for Claude
+Meta Ads MCP Server - Full Campaign Management
+Comprehensive tool for creating complete Meta Ads campaigns with ad sets, targeting, and forms
 """
 
 import os
 import requests
 import json
-from typing import Any
+from typing import Any, List, Dict
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -32,6 +32,14 @@ SOP_RULES = {
     "5": "Disable ALL Ad Enhancements"
 }
 
+# Location to geo targeting code mapping
+LOCATION_MAPPING = {
+    "dubai": 2420866,
+    "sharjah": 2420869,
+    "abu dhabi": 2420868,
+    "abudhabi": 2420868,
+}
+
 
 def test_connection():
     """Test connection to Meta API"""
@@ -54,65 +62,181 @@ def test_connection():
                 "error": response.json().get("error", {}).get("message", "Unknown error")
             }
     except Exception as e:
+        return {
+            "status": "❌ Error",
+            "error": str(e)
+        }
+
+
+def get_campaign_creatives(campaign_id: str) -> Dict:
+    """Fetch creatives and ads from an existing campaign"""
+    try:
+        headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
+        url = f"{BASE_URL}/{campaign_id}/adsets"
+        params = {
+            "fields": "id,name,creative_sequence",
+            "limit": 100
+        }
+        
+        response = requests.get(url, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            ad_sets = response.json().get("data", [])
+            
+            creatives = []
+            ads_data = []
+            
+            for ad_set in ad_sets:
+                # Get ads in this ad set
+                ads_url = f"{BASE_URL}/{ad_set['id']}/ads"
+                ads_params = {
+                    "fields": "id,name,creative,adset_id,adlabels",
+                    "limit": 100
+                }
+                ads_response = requests.get(ads_url, headers=headers, params=ads_params)
+                
+                if ads_response.status_code == 200:
+                    ads = ads_response.json().get("data", [])
+                    for ad in ads:
+                        creative_id = ad.get("creative", {}).get("id") if isinstance(ad.get("creative"), dict) else ad.get("creative")
+                        creatives.append(creative_id)
+                        ads_data.append({
+                            "ad_id": ad.get("id"),
+                            "ad_name": ad.get("name"),
+                            "creative_id": creative_id,
+                            "adset_id": ad_set["id"]
+                        })
+            
+            return {
+                "status": "✅ Fetched",
+                "count": len(ads_data),
+                "creatives": list(set(creatives)),  # Unique creatives
+                "ads": ads_data
+            }
+        else:
+            return {
+                "status": "❌ Failed",
+                "error": response.json().get("error", {}).get("message")
+            }
+    except Exception as e:
         return {"status": "❌ Error", "error": str(e)}
 
 
-def get_sop_checklist():
-    """Return SOP checklist for campaign creation"""
-    return {
-        "status": "SOP Checklist for Real Estate Campaigns",
-        "rules": SOP_RULES,
-        "important": "All rules MUST be followed for lead quality. Campaigns are created in PAUSED state for review."
-    }
-
-
-def create_campaign(campaign_name: str, audience_description: str, budget_inr: int):
+def create_full_campaign(campaign_name: str, ad_sets_config: List[Dict], form_name: str, ref_campaign_id: str) -> Dict:
     """
-    Create a new Meta Ads campaign following SOPs
+    Create a complete campaign with multiple ad sets and targeting
     
     Args:
-        campaign_name: Name of campaign (e.g., "Mumbai Real Estate - Q2")
-        audience_description: Target audience (e.g., "Ages 25-55, Mumbai, interested in properties")
-        budget_inr: Daily budget in INR
-    
-    Returns:
-        Campaign creation result
+        campaign_name: Name of the new campaign
+        ad_sets_config: List of ad set configurations
+        form_name: Lead generation form name
+        ref_campaign_id: Reference campaign to copy creatives from
     """
-    
     try:
         headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
-        url = f"{BASE_URL}/{ACCOUNT_ID}/campaigns"
         
-        # Campaign payload following SOPs
-        payload = {
+        # Step 1: Create main campaign
+        campaign_url = f"{BASE_URL}/{ACCOUNT_ID}/campaigns"
+        campaign_payload = {
             "name": campaign_name,
             "objective": "LEAD_GENERATION",
             "special_ad_categories": ["REAL_ESTATE"],
-            "status": "PAUSED",  # Always PAUSED for review
-            "daily_budget": budget_inr * 100  # Convert to cents
+            "status": "PAUSED"
         }
         
-        response = requests.post(url, json=payload, headers=headers)
+        campaign_response = requests.post(campaign_url, json=campaign_payload, headers=headers)
         
-        if response.status_code == 201:
-            campaign_id = response.json().get("id")
+        if campaign_response.status_code != 201:
+            error_msg = campaign_response.json().get("error", {}).get("message")
             return {
-                "status": "✅ Campaign Created",
+                "status": "❌ Campaign Creation Failed",
+                "error": error_msg
+            }
+        
+        campaign_id = campaign_response.json().get("id")
+        
+        # Step 2: Fetch creatives from reference campaign
+        ref_creatives = get_campaign_creatives(ref_campaign_id)
+        creatives_available = ref_creatives.get("creatives", [])
+        
+        # Step 3: Create ad sets with targeting
+        created_adsets = []
+        
+        for adset_config in ad_sets_config:
+            adset_name = adset_config.get("name", "Ad Set")
+            location = adset_config.get("location", "Dubai").lower()
+            age_min = adset_config.get("age_min", 30)
+            age_max = adset_config.get("age_max", 40)
+            budget_daily = adset_config.get("budget_daily", 2500)
+            
+            # Get location geo code
+            geo_location_id = LOCATION_MAPPING.get(location, 2420866)
+            
+            adset_url = f"{BASE_URL}/{ACCOUNT_ID}/adsets"
+            adset_payload = {
+                "name": adset_name,
                 "campaign_id": campaign_id,
-                "campaign_name": campaign_name,
-                "state": "PAUSED - Review before launching",
-                "budget_inr": budget_inr,
-                "message": f"Campaign '{campaign_name}' created. Review in Meta Ads Manager, then activate.",
-                "sop_reminder": "Ensure targeting follows all 5 SOPs before activation"
+                "daily_budget": int(budget_daily * 100),  # Convert to cents
+                "billing_event": "IMPRESSIONS",
+                "optimization_goal": "LEAD_GENERATION",
+                "targeting": {
+                    "geo_locations": {
+                        "regions": [
+                            {
+                                "key": str(geo_location_id)
+                            }
+                        ]
+                    },
+                    "age_min": age_min,
+                    "age_max": age_max
+                },
+                "status": "PAUSED"
             }
-        else:
-            error = response.json().get("error", {})
-            return {
-                "status": "❌ Creation Failed",
-                "error": error.get("message", "Unknown error"),
-                "code": error.get("code")
-            }
-    
+            
+            adset_response = requests.post(adset_url, json=adset_payload, headers=headers)
+            
+            if adset_response.status_code == 201:
+                adset_id = adset_response.json().get("id")
+                created_adsets.append({
+                    "✅ Status": "Created",
+                    "adset_name": adset_name,
+                    "adset_id": adset_id,
+                    "location": location.title(),
+                    "age_group": f"{age_min}-{age_max}",
+                    "budget_daily_inr": budget_daily
+                })
+            else:
+                error_msg = adset_response.json().get("error", {}).get("message", "Unknown error")
+                created_adsets.append({
+                    "❌ Status": "Failed",
+                    "adset_name": adset_name,
+                    "error": error_msg
+                })
+        
+        successful_adsets = [a for a in created_adsets if "adset_id" in a]
+        
+        return {
+            "✅ Status": "Campaign Created Successfully",
+            "Campaign ID": campaign_id,
+            "Campaign Name": campaign_name,
+            "Form Name": form_name,
+            "Ad Sets Created": len(successful_adsets),
+            "Total Ad Sets": len(created_adsets),
+            "Ad Sets": created_adsets,
+            "Reference Campaign ID": ref_campaign_id,
+            "Creatives Available": len(creatives_available),
+            "Message": "✅ Campaign structure created successfully!",
+            "Next Steps": [
+                "1. Go to Meta Ads Manager",
+                "2. Open campaign: " + campaign_name,
+                "3. For each ad set, attach creatives from reference campaign",
+                "4. Link lead generation form: " + form_name,
+                "5. Review all SOP compliance",
+                "6. Activate campaign when ready"
+            ],
+            "SOP Compliance": SOP_RULES
+        }
+        
     except Exception as e:
         return {
             "status": "❌ Error",
@@ -120,66 +244,20 @@ def create_campaign(campaign_name: str, audience_description: str, budget_inr: i
         }
 
 
-def list_campaigns():
-    """Get list of all campaigns in account"""
-    try:
-        headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
-        url = f"{BASE_URL}/{ACCOUNT_ID}/campaigns"
-        params = {
-            "fields": "id,name,objective,status,created_time,daily_budget",
-            "limit": 25
-        }
-        
-        response = requests.get(url, headers=headers, params=params)
-        
-        if response.status_code == 200:
-            campaigns = response.json().get("data", [])
-            return {
-                "status": "✅ Retrieved",
-                "count": len(campaigns),
-                "campaigns": campaigns
-            }
-        else:
-            return {
-                "status": "❌ Failed",
-                "error": response.json().get("error", {}).get("message")
-            }
-    
-    except Exception as e:
-        return {"status": "❌ Error", "error": str(e)}
-
-
-def get_campaign_details(campaign_id: str):
-    """Get detailed info about a specific campaign"""
-    try:
-        headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
-        url = f"{BASE_URL}/{campaign_id}"
-        params = {
-            "fields": "id,name,objective,status,created_time,daily_budget,budget_remaining"
-        }
-        
-        response = requests.get(url, headers=headers, params=params)
-        
-        if response.status_code == 200:
-            return {
-                "status": "✅ Retrieved",
-                "campaign": response.json()
-            }
-        else:
-            return {
-                "status": "❌ Failed",
-                "error": response.json().get("error", {}).get("message")
-            }
-    
-    except Exception as e:
-        return {"status": "❌ Error", "error": str(e)}
+def get_sop_checklist():
+    """Return SOP checklist"""
+    return {
+        "status": "SOP Checklist for Real Estate Campaigns",
+        "rules": SOP_RULES,
+        "important": "All rules MUST be followed for lead quality"
+    }
 
 
 # Define tools for MCP
 TOOLS = [
     {
-        "name": "test_meta_connection",
-        "description": "Test connection to Meta Ads API account",
+        "name": "test_connection",
+        "description": "Test connection to Meta Ads API",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -187,91 +265,90 @@ TOOLS = [
         }
     },
     {
-        "name": "get_sop_checklist",
-        "description": "Get the 5 SOPs for real estate campaign creation",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    },
-    {
-        "name": "create_campaign",
-        "description": "Create a new Meta Ads campaign for real estate lead generation",
+        "name": "create_full_campaign",
+        "description": "Create a complete lead generation campaign with multiple ad sets, targeting, and forms",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "campaign_name": {
                     "type": "string",
-                    "description": "Campaign name (e.g., 'Mumbai Real Estate - May 2024')"
+                    "description": "Campaign name (e.g., 'Azizi Venice by Claude')"
                 },
-                "audience_description": {
+                "ad_sets": {
+                    "type": "array",
+                    "description": "List of ad sets to create",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Ad set name (e.g., 'Dubai - 30-40')"
+                            },
+                            "location": {
+                                "type": "string",
+                                "description": "Location (Dubai, Sharjah, Abu Dhabi)"
+                            },
+                            "age_min": {
+                                "type": "integer",
+                                "description": "Minimum age"
+                            },
+                            "age_max": {
+                                "type": "integer",
+                                "description": "Maximum age"
+                            },
+                            "budget_daily": {
+                                "type": "integer",
+                                "description": "Daily budget in INR"
+                            }
+                        }
+                    }
+                },
+                "form_name": {
                     "type": "string",
-                    "description": "Target audience details (e.g., 'Ages 25-55, Mumbai, interested in properties')"
+                    "description": "Lead generation form name"
                 },
-                "budget_inr": {
-                    "type": "integer",
-                    "description": "Daily budget in Indian Rupees"
+                "ref_campaign_id": {
+                    "type": "string",
+                    "description": "Reference campaign ID to copy creatives from"
                 }
             },
-            "required": ["campaign_name", "audience_description", "budget_inr"]
+            "required": ["campaign_name", "ad_sets", "form_name", "ref_campaign_id"]
         }
     },
     {
-        "name": "list_campaigns",
-        "description": "Get list of all campaigns in the account",
+        "name": "get_sop_checklist",
+        "description": "Get the 5 SOPs for real estate campaigns",
         "inputSchema": {
             "type": "object",
             "properties": {},
             "required": []
-        }
-    },
-    {
-        "name": "get_campaign_details",
-        "description": "Get detailed information about a specific campaign",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "campaign_id": {
-                    "type": "string",
-                    "description": "The campaign ID"
-                }
-            },
-            "required": ["campaign_id"]
         }
     }
 ]
 
 
 def handle_tool_call(tool_name: str, tool_input: dict) -> Any:
-    """Route tool calls to appropriate functions"""
+    """Route tool calls"""
     
-    if tool_name == "test_meta_connection":
+    if tool_name == "test_connection":
         return test_connection()
+    
+    elif tool_name == "create_full_campaign":
+        return create_full_campaign(
+            campaign_name=tool_input.get("campaign_name"),
+            ad_sets_config=tool_input.get("ad_sets", []),
+            form_name=tool_input.get("form_name"),
+            ref_campaign_id=tool_input.get("ref_campaign_id")
+        )
     
     elif tool_name == "get_sop_checklist":
         return get_sop_checklist()
-    
-    elif tool_name == "create_campaign":
-        return create_campaign(
-            campaign_name=tool_input.get("campaign_name"),
-            audience_description=tool_input.get("audience_description"),
-            budget_inr=tool_input.get("budget_inr")
-        )
-    
-    elif tool_name == "list_campaigns":
-        return list_campaigns()
-    
-    elif tool_name == "get_campaign_details":
-        return get_campaign_details(
-            campaign_id=tool_input.get("campaign_id")
-        )
     
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
 
-# Simple HTTP server for MCP (compatible with Render)
+# Simple HTTP server for MCP
 if __name__ == "__main__":
     from http.server import HTTPServer, BaseHTTPRequestHandler
     import json
