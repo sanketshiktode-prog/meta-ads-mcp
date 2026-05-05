@@ -140,8 +140,7 @@ def create_full_campaign(campaign_name: str, ad_sets_config: List[Dict], form_na
         campaign_payload = {
             "name": campaign_name,
             "objective": "LEAD_GENERATION",
-            "special_ad_categories": ["REAL_ESTATE"],
-            "status": "PAUSED"
+           "status": "PAUSED"
         }
         
         campaign_response = requests.post(campaign_url, json=campaign_payload, headers=headers)
