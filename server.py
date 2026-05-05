@@ -1,6 +1,6 @@
 """
 Meta Ads MCP Server - Full Campaign Management
-Comprehensive tool for creating complete Meta Ads campaigns with ad sets, targeting, and forms
+Complete Meta Ads API integration for creating campaigns with ad sets and targeting
 """
 
 import os
@@ -23,7 +23,7 @@ if not META_ACCESS_TOKEN or not META_AD_ACCOUNT_ID:
 BASE_URL = "https://graph.facebook.com/v18.0"
 ACCOUNT_ID = META_AD_ACCOUNT_ID if META_AD_ACCOUNT_ID.startswith("act_") else f"act_{META_AD_ACCOUNT_ID}"
 
-# SOP Requirements (your rules)
+# SOP Requirements
 SOP_RULES = {
     "1": "Always use manual campaign setup (not Advantage+ or Tailored)",
     "2": "Disable Audience Network Placements",
@@ -57,9 +57,10 @@ def test_connection():
                 "account_id": ACCOUNT_ID
             }
         else:
+            error_msg = response.json().get("error", {}).get("message", "Unknown error")
             return {
                 "status": "❌ Connection Failed",
-                "error": response.json().get("error", {}).get("message", "Unknown error")
+                "error": error_msg
             }
     except Exception as e:
         return {
@@ -87,10 +88,9 @@ def get_campaign_creatives(campaign_id: str) -> Dict:
             ads_data = []
             
             for ad_set in ad_sets:
-                # Get ads in this ad set
                 ads_url = f"{BASE_URL}/{ad_set['id']}/ads"
                 ads_params = {
-                    "fields": "id,name,creative,adset_id,adlabels",
+                    "fields": "id,name,creative,adset_id",
                     "limit": 100
                 }
                 ads_response = requests.get(ads_url, headers=headers, params=ads_params)
@@ -99,7 +99,8 @@ def get_campaign_creatives(campaign_id: str) -> Dict:
                     ads = ads_response.json().get("data", [])
                     for ad in ads:
                         creative_id = ad.get("creative", {}).get("id") if isinstance(ad.get("creative"), dict) else ad.get("creative")
-                        creatives.append(creative_id)
+                        if creative_id:
+                            creatives.append(creative_id)
                         ads_data.append({
                             "ad_id": ad.get("id"),
                             "ad_name": ad.get("name"),
@@ -110,13 +111,14 @@ def get_campaign_creatives(campaign_id: str) -> Dict:
             return {
                 "status": "✅ Fetched",
                 "count": len(ads_data),
-                "creatives": list(set(creatives)),  # Unique creatives
+                "creatives": list(set(creatives)),
                 "ads": ads_data
             }
         else:
+            error_msg = response.json().get("error", {}).get("message", "Unknown error")
             return {
                 "status": "❌ Failed",
-                "error": response.json().get("error", {}).get("message")
+                "error": error_msg
             }
     except Exception as e:
         return {"status": "❌ Error", "error": str(e)}
@@ -128,9 +130,9 @@ def create_full_campaign(campaign_name: str, ad_sets_config: List[Dict], form_na
     
     Args:
         campaign_name: Name of the new campaign
-        ad_sets_config: List of ad set configurations
+        ad_sets_config: List of ad set configurations with targeting
         form_name: Lead generation form name
-        ref_campaign_id: Reference campaign to copy creatives from
+        ref_campaign_id: Reference campaign ID to copy creatives from
     """
     try:
         headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
@@ -140,13 +142,14 @@ def create_full_campaign(campaign_name: str, ad_sets_config: List[Dict], form_na
         campaign_payload = {
             "name": campaign_name,
             "objective": "LEAD_GENERATION",
-           "status": "PAUSED"
+            "special_ad_categories": ["HOUSING"],
+            "status": "PAUSED"
         }
         
         campaign_response = requests.post(campaign_url, json=campaign_payload, headers=headers)
         
         if campaign_response.status_code != 201:
-            error_msg = campaign_response.json().get("error", {}).get("message")
+            error_msg = campaign_response.json().get("error", {}).get("message", "Unknown error")
             return {
                 "status": "❌ Campaign Creation Failed",
                 "error": error_msg
@@ -175,7 +178,7 @@ def create_full_campaign(campaign_name: str, ad_sets_config: List[Dict], form_na
             adset_payload = {
                 "name": adset_name,
                 "campaign_id": campaign_id,
-                "daily_budget": int(budget_daily * 100),  # Convert to cents
+                "daily_budget": int(budget_daily * 100),
                 "billing_event": "IMPRESSIONS",
                 "optimization_goal": "LEAD_GENERATION",
                 "targeting": {
@@ -252,7 +255,7 @@ def get_sop_checklist():
     }
 
 
-# Define tools for MCP
+# Define tools
 TOOLS = [
     {
         "name": "test_connection",
@@ -265,13 +268,13 @@ TOOLS = [
     },
     {
         "name": "create_full_campaign",
-        "description": "Create a complete lead generation campaign with multiple ad sets, targeting, and forms",
+        "description": "Create a complete lead generation campaign with multiple ad sets and targeting",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "campaign_name": {
                     "type": "string",
-                    "description": "Campaign name (e.g., 'Azizi Venice by Claude')"
+                    "description": "Campaign name"
                 },
                 "ad_sets": {
                     "type": "array",
@@ -279,26 +282,11 @@ TOOLS = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": {
-                                "type": "string",
-                                "description": "Ad set name (e.g., 'Dubai - 30-40')"
-                            },
-                            "location": {
-                                "type": "string",
-                                "description": "Location (Dubai, Sharjah, Abu Dhabi)"
-                            },
-                            "age_min": {
-                                "type": "integer",
-                                "description": "Minimum age"
-                            },
-                            "age_max": {
-                                "type": "integer",
-                                "description": "Maximum age"
-                            },
-                            "budget_daily": {
-                                "type": "integer",
-                                "description": "Daily budget in INR"
-                            }
+                            "name": {"type": "string"},
+                            "location": {"type": "string"},
+                            "age_min": {"type": "integer"},
+                            "age_max": {"type": "integer"},
+                            "budget_daily": {"type": "integer"}
                         }
                     }
                 },
@@ -316,7 +304,7 @@ TOOLS = [
     },
     {
         "name": "get_sop_checklist",
-        "description": "Get the 5 SOPs for real estate campaigns",
+        "description": "Get the SOPs for real estate campaigns",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -327,7 +315,7 @@ TOOLS = [
 
 
 def handle_tool_call(tool_name: str, tool_input: dict) -> Any:
-    """Route tool calls"""
+    """Route tool calls to functions"""
     
     if tool_name == "test_connection":
         return test_connection()
@@ -347,10 +335,9 @@ def handle_tool_call(tool_name: str, tool_input: dict) -> Any:
         return {"error": f"Unknown tool: {tool_name}"}
 
 
-# Simple HTTP server for MCP
+# HTTP Server
 if __name__ == "__main__":
     from http.server import HTTPServer, BaseHTTPRequestHandler
-    import json
     
     class MCPHandler(BaseHTTPRequestHandler):
         def do_GET(self):
